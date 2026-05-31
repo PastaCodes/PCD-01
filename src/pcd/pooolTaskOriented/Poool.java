@@ -28,7 +28,7 @@ public class Poool {
         var view = new View(viewModel, cmdBuffer, 1200, 800);
 
         int nWorker = Runtime.getRuntime().availableProcessors() + 1;
-        var updater = new SimulationCoordinator(board, List.of(view), nWorker);
+        var updater = new SimulationCoordinator(board, List.of(view), nWorker, 100);
 
         var botUpdater = new BotUpdater(board);
 
