@@ -11,126 +11,126 @@ import java.util.function.Consumer;
 
 public class SimulationCoordinator extends Thread {
 
-	private final Board board;
-	private final GameState gameState;
-	private final List<BoardObserver> observers;
-	private final ExecutorService exec;
-	private final int nWorker;
+    private final Board board;
+    private final GameState gameState;
+    private final List<BoardObserver> observers;
+    private final ExecutorService exec;
+    private final int nTasks;
 
-	public SimulationCoordinator(
-			Board board,
-			List<BoardObserver> observers,
-			int nWorker
-	) {
-		this.board = board;
-		this.gameState = board.getState();
-		this.observers = List.copyOf(observers);
-		this.exec = Executors.newFixedThreadPool(nWorker);
-		this.nWorker = nWorker;
-	}
+    public SimulationCoordinator(
+            Board board,
+            List<BoardObserver> observers,
+            int nWorker,
+            int nTasks
+    ) {
+        this.board = board;
+        this.gameState = board.getState();
+        this.observers = List.copyOf(observers);
+        this.exec = Executors.newFixedThreadPool(nWorker);
+        this.nTasks = nTasks;
+    }
 
-	@Override
-	public void run() {
-		long nTicks = 0;
-		long t0 = System.currentTimeMillis();
-		long lastUpdateTime = System.currentTimeMillis();
-		long tickPerSec = 0;
-		while (!gameState.isGameOver()) {
-			long elapsed = System.currentTimeMillis() - lastUpdateTime;
-			lastUpdateTime = System.currentTimeMillis();
+    @Override
+    public void run() {
+        long nTicks = 0;
+        long t0 = System.currentTimeMillis();
+        long lastUpdateTime = System.currentTimeMillis();
+        long tickPerSec = 0;
+        while (!gameState.isGameOver()) {
+            long elapsed = System.currentTimeMillis() - lastUpdateTime;
+            lastUpdateTime = System.currentTimeMillis();
 
-			this.updateState(elapsed);
+            this.updateState(elapsed);
 
-			nTicks++;
-			tickPerSec = 0;
-			long dt = (System.currentTimeMillis() - t0);
-			if (dt > 0) {
-				tickPerSec = nTicks*1000/dt;
-			}
-			notifyObservers(tickPerSec);
-		}
-		for (var o : observers) {
-			o.gameOver(board.getBoardViewInfo(), gameState.getGameStateViewInfo(), tickPerSec, gameState.getGameResult());
-		}
-		exec.shutdown();
-	}
+            nTicks++;
+            tickPerSec = 0;
+            long dt = (System.currentTimeMillis() - t0);
+            if (dt > 0) {
+                tickPerSec = nTicks*1000/dt;
+            }
+            notifyObservers(tickPerSec);
+        }
+        for (var o : observers) {
+            o.gameOver(board.getBoardViewInfo(), gameState.getGameStateViewInfo(), tickPerSec, gameState.getGameResult());
+        }
+        exec.shutdown();
+    }
 
-	private void updateState(long dt) {
-		distributeLinearWork(ball -> ball.updateState(dt, board));
+    private void updateState(long dt) {
+        var allBalls = gameState.getAllBalls();
+        distributeLinearWork(allBalls, ball -> ball.updateState(dt, board));
 
-		distributeLinearWork(ball -> {
-			for (var hole : board.getHoles()) {
-				Ball.resolveHole(ball, hole, gameState);
-			}
-		});
+        distributeLinearWork(allBalls, ball -> {
+            for (var hole : board.getHoles()) {
+                Ball.resolveHole(ball, hole, gameState);
+            }
+        });
 
-		if (gameState.isGameOver())
-			return;
+        if (gameState.isGameOver())
+            return;
 
-		var smallBalls = gameState.getSmallBalls();
-		if (smallBalls.isEmpty()) {
-			setEndGame();
-			return;
-		}
+        var smallBalls = gameState.getSmallBalls();
+        if (smallBalls.isEmpty()) {
+            setEndGame();
+            return;
+        }
 
-		var allBalls = gameState.getAllBalls();
-		int nActualWorker = Math.min(nWorker, allBalls.size());
+        var allBallsAfter = gameState.getAllBalls();
+        int nActualTasks = Math.min(nTasks, allBallsAfter.size());
 
-		distributeWork(workerIndex -> {
-			for (int i = workerIndex; i < allBalls.size() - 1; i += nActualWorker) {
-				for (int j = i + 1; j < allBalls.size(); j++) {
-					Ball.resolveCollision(allBalls.get(i), allBalls.get(j));
-				}
-			}
-		}, nActualWorker);
-	}
+        distributeWork(taskIndex -> {
+            for (int i = taskIndex; i < allBallsAfter.size() - 1; i += nActualTasks) {
+                for (int j = i + 1; j < allBallsAfter.size(); j++) {
+                    Ball.resolveCollision(allBallsAfter.get(i), allBallsAfter.get(j));
+                }
+            }
+        }, nActualTasks);
+    }
 
-	public void distributeWork(Consumer<Integer> action, int nActualWorker) {
-		var work = new ArrayList<Callable<Void>>();
-		for (int i = 0; i < nActualWorker; i++) {
-			int workerIndex = i;
-			work.add(() -> {
-				action.accept(workerIndex);
-				return null;
-			});
-		}
-		try {
-			exec.invokeAll(work);
-		} catch (Exception ignored) {}
+    public void distributeWork(Consumer<Integer> action, int nActualTasks) {
+        var tasks = new ArrayList<Callable<Void>>();
+        for (int i = 0; i < nActualTasks; i++) {
+            int taskIndex = i;
+            tasks.add(() -> {
+                action.accept(taskIndex);
+                return null;
+            });
+        }
+        try {
+            exec.invokeAll(tasks);
+        } catch (Exception ignored) {}
+    }
 
-	}
+    public void distributeLinearWork(List<Ball> balls, Consumer<Ball> action) {
+        int totalSize = balls.size();
 
-	public void distributeLinearWork(Consumer<Ball> action) {
-		var allBalls = gameState.getAllBalls();
-		int totalSize = allBalls.size();
+        int nActualTasks = Math.min(nTasks, totalSize);
+        int workAmount = totalSize / nActualTasks;
 
-		int actualWorkers = Math.min(nWorker, totalSize);
-		int workAmount = totalSize / actualWorkers;
+        distributeWork(taskIndex -> {
+            int start = taskIndex * workAmount;
+            // L'ultima task prende tutti gli elementi fino alla fine della lista,
+            // includendo il resto della divisione
+            int end = (taskIndex == nActualTasks - 1) ? totalSize : start + workAmount;
+            for (int j = start; j < end; j++) {
+                action.accept(balls.get(j));
+            }
+        }, nActualTasks);
+    }
 
-		distributeWork(workerIndex -> {
-			int start = workerIndex * workAmount;
-			// L'ultimo worker prende tutti gli elementi fino alla fine della lista,
-			// includendo il resto della divisione
-			int end = (workerIndex == actualWorkers - 1) ? totalSize : start + workAmount;
-			for (int j = start; j < end; j++) {
-				action.accept(allBalls.get(j));
-			}
-		}, nWorker);
-	}
+    private void setEndGame() {
+        int humanScore = gameState.getHumanScore();
+        int botScore = gameState.getBotScore();
+        String gameResult = humanScore > botScore ? "Human wins! " + humanScore + " - " + botScore
+                : botScore > humanScore ? "Bot wins! " + botScore + " - " + humanScore
+                : "Draw! " + humanScore + " - " + botScore;
+        gameState.endGame(gameResult);
+    }
 
-	private void setEndGame() {
-		int humanScore = gameState.getHumanScore();
-		int botScore = gameState.getBotScore();
-		String gameResult = humanScore > botScore ? "Human wins! " + humanScore + " - " + botScore
-				: botScore > humanScore ? "Bot wins! " + botScore + " - " + humanScore
-				: "Draw! " + humanScore + " - " + botScore;
-		gameState.endGame(gameResult);
-	}
-
-	private void notifyObservers(long tickPerSec) {
-		for (var o: observers) {
-			o.modelUpdated(board.getBoardViewInfo(), gameState.getGameStateViewInfo(), tickPerSec);
-		}
-	}
+    private void notifyObservers(long tickPerSec) {
+        for (var o: observers) {
+            o.modelUpdated(board.getBoardViewInfo(), gameState.getGameStateViewInfo(), tickPerSec);
+        }
+    }
 
 }
