@@ -27,7 +27,8 @@ public class Poool {
         var viewModel = new ViewModel(board.getBoardViewInfo(), gameState.getGameStateViewInfo());
         var view = new View(viewModel, cmdBuffer, 1200, 800);
 
-		var updater = new SimulationCoordinator(board, List.of(view));
+        var poolSize = Runtime.getRuntime().availableProcessors() + 1;
+		var updater = new SimulationCoordinator(board, List.of(view), poolSize);
 
         var botUpdater = new BotUpdater(board);
 
